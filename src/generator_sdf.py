@@ -28,7 +28,7 @@ else:
     <model name='aruco_marker_{target_aruco_id}'>
         <static>true</static>
         <link name='link_aruco_{target_aruco_id}'>
-        <pose>{data['pos_x']} {data['pos_y']} {data['pos_z']} 0 0 0</pose>
+        <pose>{data['pos_x']} {data['pos_y']} {data['pos_z']} 0 0 {data['yaw']}</pose>
         <inertial>
             <pose>0 0 0 0 0 0</pose>
             <mass>0.001</mass>

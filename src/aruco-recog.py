@@ -48,12 +48,12 @@ class ArUcoDetector(Node):
         
         #Cria o dicionario com as distancias p/ID
         self.distIDs = {}
-        self.valor_ate_50 = 3.93
+        self.valor_ate_50 = 10
         for i in range(0, 1):
             self.distIDs[i] = self.valor_ate_50
 
         # Definir outro valor igual para as chaves de 51 a 100
-        self.valor_ate_100 = 3.93
+        self.valor_ate_100 = 10
         for i in range(1, 6):
             self.distIDs[i] = self.valor_ate_100
 
@@ -108,11 +108,13 @@ class ArUcoDetector(Node):
         # Detecta os ArUcos na imagem
         marker_corners, ids, rejected_img_points = aruco.detectMarkers(gray, self.aruco_dict, parameters=self.parameters)
         if len(marker_corners) > 0:
+            print('adas', self.distIDs.keys)
             # Procura o ArUco com o ID especificado
             for i in range(len(marker_corners)):
                 aruco_id = ids[i][0]
                 marker_corner = marker_corners[i]
                 if aruco_id in self.distIDs.keys():
+                    print("aqui")
                     marker_size = self.distIDs[aruco_id]
                     cv_image = self.aruco_detection(marker_corner, marker_size, msg, cv_image, aruco_id)
                     ids_presentes = [item['id'] for item in self.aruco_info]
@@ -122,11 +124,10 @@ class ArUcoDetector(Node):
                             if item['id'] == aruco_id:
                                 aruco_data = item
                                 break                        
-                        print('aruco_data', aruco_data)
                         self.pos_x = aruco_data['pos_x']
                         self.pos_y = aruco_data['pos_y'] 
                         self.pos_z = aruco_data['pos_z']
-                        print('poses', self.pos_x, self.pos_y, self.pos_z)
+                        print('aaa', self.pos_x)
                         #t = TransformStamped()
                         #t.header.stamp = msg.header.stamp  # Use o carimbo de data/hora da imagem
                         #t.header.frame_id = "odom_frame"  # O quadro de referência do mundo
@@ -161,18 +162,18 @@ class ArUcoDetector(Node):
         aruco_pos_cam = Point()
         aruco_pos_cam.x, aruco_pos_cam.y, aruco_pos_cam.z = tVec[0][0][0], tVec[0][0][1], tVec[0][0][2]
         aruco_ori = Quaternion()
-        aruco_ori.w = 1.    
-        print('-------')
-        
-
-        print('aaaa', aruco_pos_cam)
-
+        aruco_ori.w = 1.
+        #print('aaaa', aruco_pos_cam)    
         aruco_pos_robot = Point()
         aruco_pos_robot.x, aruco_pos_robot.y, aruco_pos_robot.z = self.pos_x - aruco_pos_cam.x, self.pos_y - aruco_pos_cam.y, self.pos_z - aruco_pos_cam.z 
         robot_ori = Quaternion()
         robot_ori.w = 1.
 
-        print("ueba", aruco_pos_robot)
+        print("aruco_pos_robot", aruco_pos_robot)
+        print("---------")
+        print("aruco_pos_cam", aruco_pos_cam)
+        print("---------")
+        print("pos", self.pos_x, self.pos_y, self.pos_z)
         # Desenha o contorno do ArUco encontrado
         cv2.polylines(
             cv_image, [marker_corner.astype(np.int32)], True, (0, 255, 0), 2, cv2.LINE_AA
@@ -213,7 +214,6 @@ class ArUcoDetector(Node):
         self.dist_coef = np.array(msg.d)
         
 def main(args=None):
-    print('hello')
     rclpy.init(args=args)
 
     # Cria o nó do detector de ArUcos
