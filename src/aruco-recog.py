@@ -13,6 +13,13 @@ from geometry_msgs.msg import PoseStamped, Point, Pose, Quaternion, TransformSta
 from std_msgs.msg import Header
 import math
 import json
+import tf2_ros
+import tf2_geometry_msgs
+from tf2_ros import TransformException
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
+from nav_msgs.msg import Odometry
+
 #from pose_msgs.msg import poseDictionaryMsg
 
 # Importa a biblioteca ArUco
@@ -26,9 +33,12 @@ class ArUcoDetector(Node):
         
         # receber as imagens da câmera
         self.create_subscription(Image, '/freedom_vehicle/camera/image_raw', self.image_callback, 10)
-        
+
         # receber as informações da câmera
         self.create_subscription(CameraInfo, '/freedom_vehicle/camera/camera_info', self.camera_info_callback, 10)
+        print('aquieuto')
+        self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        print('aquieuto2')
 
         
         # Configura o publicador para publicar a imagem com os ArUcos detectados
@@ -48,12 +58,12 @@ class ArUcoDetector(Node):
         
         #Cria o dicionario com as distancias p/ID
         self.distIDs = {}
-        self.valor_ate_50 = 10
+        self.valor_ate_50 = 7.14
         for i in range(0, 1):
             self.distIDs[i] = self.valor_ate_50
 
         # Definir outro valor igual para as chaves de 51 a 100
-        self.valor_ate_100 = 10
+        self.valor_ate_100 = 7.14
         for i in range(1, 6):
             self.distIDs[i] = self.valor_ate_100
 
@@ -88,9 +98,12 @@ class ArUcoDetector(Node):
 
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
-        self.pos_x = 0
-        self.pos_y = 0
-        self.pos_z = 0
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        self.pos_x = 0.0
+        self.pos_y = 0.0
+        self.pos_z = 0.0
 
     def image_callback(self, msg : Image):
         marker_size = 0
@@ -109,6 +122,7 @@ class ArUcoDetector(Node):
         marker_corners, ids, rejected_img_points = aruco.detectMarkers(gray, self.aruco_dict, parameters=self.parameters)
         if len(marker_corners) > 0:
             print('adas', self.distIDs.keys)
+            
             # Procura o ArUco com o ID especificado
             for i in range(len(marker_corners)):
                 aruco_id = ids[i][0]
@@ -124,22 +138,6 @@ class ArUcoDetector(Node):
                             if item['id'] == aruco_id:
                                 aruco_data = item
                                 break                        
-                        self.pos_x = aruco_data['pos_x']
-                        self.pos_y = aruco_data['pos_y'] 
-                        self.pos_z = aruco_data['pos_z']
-                        print('aaa', self.pos_x)
-                        #t = TransformStamped()
-                        #t.header.stamp = msg.header.stamp  # Use o carimbo de data/hora da imagem
-                        #t.header.frame_id = "odom_frame"  # O quadro de referência do mundo
-                        #t.child_frame_id = f"marker_{aruco_id}"  # Um quadro de referência único para cada marcador
-
-                        #t.transform.translation.x = pos_x
-                        #t.transform.translation.y = pos_y
-                        #t.transform.translation.z = pos_z
-                        #t.transform.rotation.w = 1.0  # Quaternion unitário
-                        #self.tf_broadcaster.sendTransform(t)
-                        
-                        #print('oi', t.transform.translation.y)
 
                     # Publica a imagem com os ArUcos detectados
                     output_msg = self.bridge.cv2_to_imgmsg(cv_image, encoding='bgr8')
@@ -153,27 +151,55 @@ class ArUcoDetector(Node):
                     print(e)
 
     def aruco_detection(self, marker_corner, marker_size, msg, cv_image, aruco_id):
+        print('aruco_detection')
         _, tVec, _ = aruco.estimatePoseSingleMarkers(
                         marker_corner, marker_size, self.camera_matrix, self.dist_coef
                         )
 
         distance = np.sqrt(tVec[0][0][2] ** 2 + tVec[0][0][0] ** 2 + tVec[0][0][1] ** 2)
         
+        
         aruco_pos_cam = Point()
-        aruco_pos_cam.x, aruco_pos_cam.y, aruco_pos_cam.z = tVec[0][0][0], tVec[0][0][1], tVec[0][0][2]
+        aruco_pos_cam.x, aruco_pos_cam.y, aruco_pos_cam.z = tVec[0][0][2]/100, -tVec[0][0][0]/100, -tVec[0][0][1]/100
+
         aruco_ori = Quaternion()
         aruco_ori.w = 1.
-        #print('aaaa', aruco_pos_cam)    
-        aruco_pos_robot = Point()
-        aruco_pos_robot.x, aruco_pos_robot.y, aruco_pos_robot.z = self.pos_x - aruco_pos_cam.x, self.pos_y - aruco_pos_cam.y, self.pos_z - aruco_pos_cam.z 
-        robot_ori = Quaternion()
-        robot_ori.w = 1.
 
-        print("aruco_pos_robot", aruco_pos_robot)
-        print("---------")
-        print("aruco_pos_cam", aruco_pos_cam)
-        print("---------")
-        print("pos", self.pos_x, self.pos_y, self.pos_z)
+
+        t = TransformStamped()
+        t.header.stamp = msg.header.stamp
+        t.header.frame_id = 'camera_link'
+        t.child_frame_id = f"marker_{aruco_id}"
+
+        t.transform.translation.x = aruco_pos_cam.x
+        t.transform.translation.y = aruco_pos_cam.y
+        t.transform.translation.z = aruco_pos_cam.z
+        t.transform.rotation = aruco_ori
+
+        self.tf_broadcaster.sendTransform(t)
+
+
+        t_cambase = self.tf_buffer.lookup_transform(
+        'base_link',
+        'camera_link',
+        rclpy.time.Time())
+        
+        print('opa', t_cambase.transform.translation.x)        
+        # Publica a transformação
+        self.tf_broadcaster.sendTransform(t_cambase) 
+        self.print_camera_position(t_cambase)
+
+
+        print('odom', self.pos_x, self.pos_y, self.pos_z)
+
+        map = Point()
+        map.x = self.pos_x - t_cambase.transform.translation.x
+        map.y = self.pos_y - t_cambase.transform.translation.y
+        map.z = self.pos_z - t_cambase.transform.translation.z
+        
+
+        print('map', map)
+
         # Desenha o contorno do ArUco encontrado
         cv2.polylines(
             cv_image, [marker_corner.astype(np.int32)], True, (0, 255, 0), 2, cv2.LINE_AA
@@ -209,11 +235,25 @@ class ArUcoDetector(Node):
         return cv_image
 
     def camera_info_callback(self, msg : CameraInfo):
+        print('camera_info_callback')
         # Atualiza a matriz de calibração da câmera
         self.camera_matrix = np.array(msg.k).reshape((3, 3))
         self.dist_coef = np.array(msg.d)
-        
+
+    def odom_callback(self, msg : Odometry):
+        print('msg', msg.pose.pose.position.x)
+        self.pos_x = msg.pose.pose.position.x
+        self.pos_y = msg.pose.pose.position.y
+        self.pos_z = msg.pose.pose.position.z
+
+            
+    def print_camera_position(self, *transforms):
+        for transform in transforms:
+            self.get_logger().info(f"aruco position for cam:")
+            self.get_logger().info(f"Translation (x, y, z): {transform.transform.translation.x}, {transform.transform.translation.y}, {transform.transform.translation.z}")
+            
 def main(args=None):
+    print('aruco-recog')
     rclpy.init(args=args)
 
     # Cria o nó do detector de ArUcos
