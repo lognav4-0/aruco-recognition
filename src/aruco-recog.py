@@ -9,7 +9,8 @@ import numpy as np
 import sys
 import tf2_ros
 import tf2_geometry_msgs
-from geometry_msgs.msg import PoseStamped, Point, Pose, Quaternion, TransformStamped
+from geometry_msgs.msg import PoseStamped, Point, Twist
+from rclpy.qos import QoSProfile
 from std_msgs.msg import Header
 import math
 import json
@@ -23,6 +24,8 @@ from tf2_ros.transform_listener import TransformListener
 from nav_msgs.msg import Odometry
 import os
 import geometry_msgs.msg
+from scipy.spatial.transform import Rotation as R
+
 
 #from pose_msgs.msg import poseDictionaryMsg
 
@@ -35,15 +38,15 @@ class ArUcoDetector(Node):
     def __init__(self):
         super().__init__('aruco_detector')
         
-        # receber as imagens da câmera
-        self.create_subscription(Image, '/freedom_vehicle/camera/image_raw', self.image_callback, 10)
+        self.camera1_subscription = self.create_subscription(Image, '/freedom_vehicle/camera/image_raw', self.camera1_image_callback, 10)
+        self.camera2_subscription = self.create_subscription(Image, '/freedom_vehicle/camera2/image_raw', self.camera2_image_callback, 10)
 
-        # receber as informações da câmera
+
         self.create_subscription(CameraInfo, '/freedom_vehicle/camera/camera_info', self.camera_info_callback, 10)
-        print('aquieuto')
         self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
-        print('aquieuto2')
 
+        qos = QoSProfile(depth=10)
+        self.pub = self.create_publisher(Twist, 'cmd_vel', qos)
         
         # Configura o publicador para publicar a imagem com os ArUcos detectados
         self.image_publisher = self.create_publisher(Image, '/aruco_detector/output_image', 10)
@@ -112,73 +115,79 @@ class ArUcoDetector(Node):
         self.pos.x = 0.0
         self.pos.y = 0.0
         self.pos.z = 0.0
+        self.yaw = 0.0
 
         self.pos_odom = Point()
         self.pos_odom.x = 0.0
         self.pos_odom.y = 0.0
         self.pos_odom.z = 0.0
 
-    def image_callback(self, msg : Image):
+    def camera1_image_callback(self, msg: Image):
+        self.process_image(msg, camera_id=1)
+    def camera2_image_callback(self, msg: Image):
+        self.process_image(msg, camera_id=2)
+
+    def process_image(self, msg: Image, camera_id: int):
         marker_size = 0
-        # Converte a imagem ROS em uma imagem OpenCV
         try:
             cv_image = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
-             # Converte a imagem para tons de fe(self.cv_image_pixel.copy(), (500, 400), interpolation = cv2.INTER_AREA))
-            # cv2.imwrite(dirPath + '/pixel_test.png', cv2.resize(self.cv_image_pixel.copy(), (500, 400), interpolation = cv2.INTER_AREA))
             cv2.waitKey(3)
         except CvBridgeError as e:
             print(e)
-        
-        gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
 
-        # Detecta os ArUcos na imagem
+        gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
         marker_corners, ids, rejected_img_points = aruco.detectMarkers(gray, self.aruco_dict, parameters=self.parameters)
+
         if len(marker_corners) > 0:
-            print('adas', self.distIDs.keys)
-            
-            # Procura o ArUco com o ID especificado
             for i in range(len(marker_corners)):
                 aruco_id = ids[i][0]
                 marker_corner = marker_corners[i]
                 if aruco_id in self.distIDs.keys():
-                    print("aqui")
                     marker_size = self.distIDs[aruco_id]
                     cv_image = self.aruco_detection(marker_corner, marker_size, msg, cv_image, aruco_id, self.create_transform_matrix_3d)
                     ids_presentes = [item['id'] for item in self.aruco_info]
-                    print('id', aruco_id)
                     if aruco_id in ids_presentes:
                         for item in self.aruco_info:
                             if item['id'] == aruco_id:
                                 aruco_data = item
                                 break
-                        self.pos.x = aruco_data['pos_x']
-                        self.pos.y = aruco_data['pos_y'] 
-                        self.pos.z = aruco_data['pos_z']         
+                        self.pos.x = np.float64(aruco_data['pos_x'])
+                        self.pos.y = np.float64(aruco_data['pos_y'])
+                        self.pos.z = np.float64(aruco_data['pos_z'])
+                        self.yaw = np.float64(aruco_data['yaw'])
 
-                    # Publica a imagem com os ArUcos detectados
                     output_msg = self.bridge.cv2_to_imgmsg(cv_image, encoding='bgr8')
                     self.image_publisher.publish(output_msg)
 
+                    while camera_id == 2 and aruco_id == 1:
+                        twist = Twist()
+                        twist.linear.x = 0.0
+                        twist.linear.y = 0.0
+                        twist.linear.z = 0.0
+                        twist.angular.x = 0.0
+                        twist.angular.y = 0.0
+                        twist.angular.z = 0.0
+                        self.pub.publish(twist)
+
                 try:
-                    cv2.imshow("O(t)_output", cv2.resize(cv_image, (500, 400), interpolation = cv2.INTER_AREA))
-                    # cv2.imwrite(dirPath + '/pixel_test.png', cv2.resize(self.cv_image_pixel.copy(), (500, 400), interpolation = cv2.INTER_AREA))
+                    cv2.imshow("O(t)_output", cv2.resize(cv_image, (500, 400), interpolation=cv2.INTER_AREA))
                     cv2.waitKey(3)
                 except CvBridgeError as e:
                     print(e)
 
     def create_transform_matrix_3d(self, angle_x, angle_y, angle_z, tx, ty, tz):
         Rx = np.array([[1, 0, 0, 0],
-                    [0, np.cos(angle_x), -np.sin(angle_x), 0],
-                    [0, np.sin(angle_x), np.cos(angle_x), 0],
+                    [0, np.cos(angle_x), np.sin(angle_x), 0],
+                    [0, -np.sin(angle_x), np.cos(angle_x), 0],
                     [0, 0, 0, 1]])
         
-        Ry = np.array([[np.cos(angle_y), 0, np.sin(angle_y), 0],
+        Ry = np.array([[np.cos(angle_y), 0, -np.sin(angle_y), 0],
                     [0, 1, 0, 0],
-                    [-np.sin(angle_y), 0, np.cos(angle_y), 0],
+                    [np.sin(angle_y), 0, np.cos(angle_y), 0],
                     [0, 0, 0, 1]])
         
         Rz = np.array([[np.cos(angle_z), -np.sin(angle_z), 0, 0],
-                    [np.sin(angle_z), np.cos(angle_z), 0, 0],
+                    [-np.sin(angle_z), np.cos(angle_z), 0, 0],
                     [0, 0, 1, 0],
                     [0, 0, 0, 1]])
 
@@ -190,11 +199,11 @@ class ArUcoDetector(Node):
         return transform_matrix
 
     def aruco_detection(self, marker_corner, marker_size, msg, cv_image, aruco_id, create_transform_matrix_3d):
-        print('aruco_detection')
+ 
+        t_mundo_aruco = self.create_transform_matrix_3d(0, 0, self.yaw, self.pos.x, self.pos.y, self.pos.z)
 
         try:
-            # Obtenha a transformação atual entre os quadros
-            transform = self.tf_buffer.lookup_transform('odom', 'camera_link', rclpy.time.Time(), timeout=rclpy.time.Duration(seconds=1))
+            transform = self.tf_buffer.lookup_transform('base_link', 'camera_link', rclpy.time.Time(), timeout=rclpy.time.Duration(seconds=1))
             translation = np.array([transform.transform.translation.x,
                                     transform.transform.translation.y,
                                     transform.transform.translation.z])
@@ -202,95 +211,46 @@ class ArUcoDetector(Node):
                                 transform.transform.rotation.y,
                                 transform.transform.rotation.z,
                                 transform.transform.rotation.w])
+            
+            transform_euler = R.from_quat([rotation[0], rotation[1], rotation[2], rotation[3]])
+            transform_euler = transform_euler.as_euler('xyz', degrees=False)
 
-            transform_matrix = self.create_transform_matrix_3d(0, 0, 0, translation[0], translation[1], translation[2])
+            t_base_camera = self.create_transform_matrix_3d(transform_euler[0], transform_euler[1], transform_euler[2], translation[0], translation[1], translation[2])
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
             print("Erro ao obter a transformação:", e)
 
 
-        _, tVec, _ = aruco.estimatePoseSingleMarkers(
-                        marker_corner, marker_size, self.camera_matrix, self.dist_coef
-                        )
-
+        marker_corner_array = np.array(marker_corner).astype(np.float32)
+        rVec, tVec, _ = aruco.estimatePoseSingleMarkers(marker_corner_array, marker_size, self.camera_matrix, self.dist_coef)
         distance = np.sqrt(tVec[0][0][2] ** 2 + tVec[0][0][0] ** 2 + tVec[0][0][1] ** 2)
-        
-        tVec_odom = np.dot(transform_matrix, distance)
-        
-        aruco_pos_cam = Point()
-        aruco_pos_cam.x, aruco_pos_cam.y, aruco_pos_cam.z = tVec[0][0][2]/100, -tVec[0][0][0]/100, -tVec[0][0][1]/100
-
-        aruco_pos_cam_np = np.array([aruco_pos_cam.x, aruco_pos_cam.y, aruco_pos_cam.z, 1])
-
-        aruco_ori = Quaternion()
-        aruco_ori.w = 1.
-
-        aruco_pos_odom = np.dot(transform_matrix, aruco_pos_cam_np)
-        print('aruco_pos_odom', aruco_pos_odom)
-
-
-        t = TransformStamped()
-        t.header.stamp = msg.header.stamp
-        t.header.frame_id = "camera_link"
-        t.child_frame_id = f"marker_{aruco_id}"
-
-        t.transform.translation.x = aruco_pos_cam.x
-        t.transform.translation.y = aruco_pos_cam.y
-        t.transform.translation.z = aruco_pos_cam.z
-        t.transform.rotation = aruco_ori
-
-        self.tf_broadcaster.sendTransform(t)
-        print('aruco_camera_translation', t.transform.translation)
-        print('aruco_camera_rotation', t.transform.rotation)
-
-        # t_cambase = self.tf_buffer.lookup_transform(
-        # 'camera_link',
-        # 'base_link',
-        # rclpy.time.Time())
-        
-        # # Publica a transformação
-        # self.tf_broadcaster.sendTransform(t_cambase) 
-        # self.print_camera_position(t_cambase)
-        # #print('uepa', t_cambase)
-
-
-        # # Vetor de rotação da transformada t_cambase
-        # rotation_w = t_cambase.transform.rotation.w
-        # rotation_z = t_cambase.transform.rotation.z
-        # rotation_x = t_cambase.transform.rotation.x
-        # rotation_y = t_cambase.transform.rotation.y
-
-        # # Vetor de translação da transformada t_cambase
-
-        # translation_x = t_cambase.transform.translation.x
-        # translation_y = t_cambase.transform.translation.y
-        # translation_z = t_cambase.transform.translation.z
 
         
+        t_aruco_camera = create_transform_matrix_3d(rVec[0][0][2], rVec[0][0][0], rVec[0][0][1], 
+                                                        tVec[0][0][2]/100, -tVec[0][0][0]/100, 
+                                                        -tVec[0][0][1]/100)
+        #Posição do ArUco no mundo
+        O0_0 = np.array([[0, 0, 0, 1]]).T       
+        O1_0 = t_mundo_aruco @ O0_0
+        print('O1_0', O1_0)
 
-        # camera_odom = Quaternion(x=rotation_x, y=rotation_y, z=rotation_z, w=rotation_w)
-        # camera_odom.x = self.pos_odom.x + translation_x
-        # camera_odom.y = self.pos_odom.y + translation_y
-        # camera_odom.z = self.pos_odom.z + translation_z
-        aruco_world = np.array([self.pos.x, self.pos.y, self.pos.z, 1.0])
-        aruco_cam= np.array([aruco_pos_cam.x, aruco_pos_cam.y, aruco_pos_cam.z, 1.0])
+        #O2_2 = np.array([[0, 0, 0, 1]]).T
+        #O1_2 = transform_matrix @ O2_2
 
-        odom_map = Point()
-        odom_map.x = aruco_world[0] - self.pos.x
-        odom_map.y = aruco_world[1] - self.pos.y
-        odom_map.z = aruco_world[2] - self.pos.z
+        #Posição do Aruco para a câmera
+        O2_2 = np.array([[0, 0, 0, 1]]).T
+        O1_2 = t_aruco_camera @ O2_2
+        print('O1_2', O1_2)
+
+        t_aruco_camera_inv = np.linalg.inv(t_aruco_camera)
+        print('t_aruco_camera_inv', t_aruco_camera_inv, t_aruco_camera)
+
+        T20 = t_mundo_aruco @ t_aruco_camera_inv 
+        print('T20', T20)
+        print('ground_truth', [0.03, -1.5855, 0.93])
+        #sla = T_mundo_aruco_final @ t_final @ transform_matrix
+        #print('sla', sla)
+        #print('ground_truth', self.pos_odom)
         
-
-        odom_map = Point()
-        odom_map.x = self.pos.x - (t.transform.translation.x + transform.transform.translation.x)
-        odom_map.y = self.pos.y - (t.transform.translation.y + transform.transform.translation.y)
-        odom_map.z = self.pos.z - (t.transform.translation.z + transform.transform.translation.z)
-
-        #print('map', odom_map)
-        #print('camera_odom', camera_odom)
-        #print('posicao', self.pos.x)
-        #print('aruco', aruco_pos_cam.x)
-        #print('t_cambase',t_cambase.transform.translation.x)
-        # Desenha o contorno do ArUco encontrado
         cv2.polylines(
             cv_image, [marker_corner.astype(np.int32)], True, (0, 255, 0), 2, cv2.LINE_AA
         )
@@ -315,7 +275,7 @@ class ArUcoDetector(Node):
         )
         cv2.putText(
             cv_image,
-            f"x:{round(aruco_pos_cam.x,1)} y: {round(aruco_pos_cam.y,1)} ",
+            f"x:{round(tVec[0][0][2]/100,1)} y: {round(-tVec[0][0][0],1)} ",
             bottom_right,
             cv2.FONT_HERSHEY_PLAIN,
             2,
