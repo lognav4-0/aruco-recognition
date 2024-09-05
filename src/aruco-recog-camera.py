@@ -13,11 +13,10 @@ from geometry_msgs.msg import PoseStamped, Point, Pose, Quaternion, TransformSta
 from std_msgs.msg import Header
 import cv2.aruco as aruco
 import threading
-import keyboard
-
+from pynput import keyboard
 
 # Caminho para o arquivo de calibração
-calib_data_path = "/home/lognav/lognav_ws/src/aruco_recognition/src/calib_data/MultiMatrix.npz"
+calib_data_path = "/home/freedom/freedom_ws/src/aruco_recognition/src/calib_data/MultiMatrix.npz"
 
 # Carregar dados de calibração
 calib_data = np.load(calib_data_path)
@@ -40,7 +39,7 @@ class ArUcoDetector(Node):
         self.publisher_stamp = self.create_publisher(PoseStamped, 'pose_stamped_topic', 10)
 
         qos = QoSProfile(depth=10)
-        self.pub = self.create_publisher(Twist, 'cmd_vel', qos)
+        self.pub = self.create_publisher(Twist, '/hoverboard_base_controller/cmd_vel_unstamped', qos)
 
         # Inicializa o objeto cv_bridge
         self.bridge = CvBridge()
@@ -115,14 +114,10 @@ class ArUcoDetector(Node):
                     # Publica a imagem com os ArUcos detectados
                     output_msg = self.bridge.cv2_to_imgmsg(cv_image, encoding='bgr8')
                     self.image_publisher.publish(output_msg)
-                        
-                    if aruco_id == 1 and not self.paused:
-                        self.pause_movement()
+
 
                     # Verifica se o ArUco foi detectado pela primeira vez
-                    if aruco_id == 1 and self.first_detection:
-                        self.first_detection = False
-                        self.get_logger().info("First detection of ArUco ID 1. Entering pause mode.")
+                    while aruco_id == 1 and self.first_detection:
                         self.pause_movement()
         try:
             cv2.imshow("ArUco Detection", cv2.resize(cv_image, (500, 400), interpolation=cv2.INTER_AREA))
@@ -159,23 +154,33 @@ class ArUcoDetector(Node):
     def pause_movement(self):
         print('Stopped')
         twist = Twist()
-        self.previous_twist = twist 
+        twist.linear.x = 0.0
+        twist.linear.y = 0.0
+        twist.linear.z = 0.0
+        twist.angular.x = 0.0
+        twist.angular.y = 0.0
+        twist.angular.z = 0.0
         self.pub.publish(twist)
         self.paused = True
 
     def resume_movement(self):
-        self.pub.publish(self.previous_twist)
+        twist = Twist()
+        twist.linear.x = 0.2
+        self.pub.publish(twist)
+        self.first_detection = False
         self.paused = False
 
     def detect_key(self):
-        while rclpy.ok():
-            if keyboard.is_pressed(' '): 
+        def on_press(key):
+            if key == keyboard.Key.space:
                 with self.lock:
                     if self.paused:
                         self.resume_movement()
                     else:
                         self.pause_movement()
-
+    
+        listener = keyboard.Listener(on_press=on_press)
+        listener.start()
 def main(args=None):
     rclpy.init(args=args)
     aruco_detector = ArUcoDetector()
